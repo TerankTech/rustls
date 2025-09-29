@@ -215,7 +215,10 @@ impl DeframerVecBuffer {
         /// TLS allows for handshake messages of up to 16MB.  We
         /// restrict that to 64KB to limit potential for denial-of-
         /// service.
-        const MAX_HANDSHAKE_SIZE: u32 = 0xffff;
+        
+        // const MAX_HANDSHAKE_SIZE: u32 = 0xffff;
+        // Increased from 64KB to 256KB to handle larger handshake messages with DPDK
+        const MAX_HANDSHAKE_SIZE: u32 =0x40000;
 
         const READ_SIZE: usize = 4096;
 
