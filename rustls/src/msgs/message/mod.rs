@@ -258,7 +258,8 @@ pub(crate) const HEADER_SIZE: usize = 1 + 2 + 2;
 
 /// Maximum message payload size.
 /// That's 2^14 payload bytes and a 2KB allowance for ciphertext overheads.
-const MAX_PAYLOAD: u16 = 16_384 + 2048;
+/// Increased to 64KB to handle large WebSocket messages without buffer overflow.
+const MAX_PAYLOAD: u16 = 65535;
 
 /// Maximum on-the-wire message size.
 #[cfg(feature = "std")]
