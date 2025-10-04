@@ -61,9 +61,9 @@ impl VecInput {
     /// Resize the internal `buf` if necessary for reading more bytes.
     fn prepare_read(&mut self) -> Result<(), &'static str> {
         /// TLS allows for handshake messages of up to 16MB.  We
-        /// restrict that to 64KB to limit potential for denial-of-
-        /// service.
-        const MAX_HANDSHAKE_SIZE: usize = 0xffff;
+        /// restrict that to 256KB to limit potential for denial-of-
+        /// service while supporting large TLS handshakes.
+        const MAX_HANDSHAKE_SIZE: usize = 256 * 1024;
 
         const READ_SIZE: usize = 4096;
 
