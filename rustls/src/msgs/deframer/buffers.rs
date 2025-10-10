@@ -5,8 +5,6 @@ use core::ops::Range;
 use std::io;
 
 #[cfg(feature = "std")]
-use crate::msgs::message::MAX_WIRE_SIZE;
-
 /// Conversion from a slice within a larger buffer into
 /// a `Range` offset within.
 #[derive(Debug)]
@@ -218,17 +216,16 @@ impl DeframerVecBuffer {
         const MAX_HANDSHAKE_SIZE: u32 = 256 * 1024;
 
         const READ_SIZE: usize = 4096;
+        const MAX_APPDATA_BUFFER: usize = 512 * 1024;
 
-        // We allow a maximum of 64k of buffered data for handshake messages only. Enforce this
-        // by varying the maximum allowed buffer size here based on whether a prefix of a
-        // handshake payload is currently being buffered. Given that the first read of such a
-        // payload will only ever be 4k bytes, the next time we come around here we allow a
-        // larger buffer size. Once the large message and any following handshake messages in
-        // the same flight have been consumed, `pop()` will call `discard()` to reset `used`.
-        // At this point, the buffer resizing logic below should reduce the buffer size.
+        // Allow larger application-data bursts by permitting up to ~512KB of ciphertext to be
+        // buffered while still bounding handshake buffering to 256KB. This accommodates peers
+        // that coalesce many TLS records (for example, Binance depth snapshots) without forcing
+        // us to enable unbounded buffering. Once the buffered data has been consumed,
+        // `discard()` resets `used` and the resizing logic below shrinks the buffer back down.
         let allow_max = match is_joining_hs {
             true => MAX_HANDSHAKE_SIZE as usize,
-            false => MAX_WIRE_SIZE,
+            false => MAX_APPDATA_BUFFER,
         };
 
         if self.used >= allow_max {
