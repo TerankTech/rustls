@@ -7,6 +7,7 @@ use pki_types::{FipsStatus, ServerName};
 
 use super::config::ClientConfig;
 use super::hs::ClientHelloInput;
+use super::state::ClientHandshake;
 use crate::client::EchStatus;
 use crate::common_state::{CommonState, ConnectionOutputs, EarlyDataEvent, Event, Protocol, Side};
 use crate::conn::private::SideOutput;
