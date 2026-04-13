@@ -42,9 +42,7 @@ impl SendTraffic {
     /// This is useful to handle a [`ReceiveTrafficState::WakeSender`] event, but
     /// where you don't have any plaintext to send.
     pub fn take_data(&mut self) -> Option<Vec<u8>> {
-        let mut inner = self.0.lock().unwrap();
-        inner.maybe_refresh_traffic_keys();
-        inner.sendable_tls.pop()
+        self.0.lock().unwrap().take_data()
     }
 
     /// Conclude sending traffic by sending a `close_notify` alert.

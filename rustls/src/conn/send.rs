@@ -154,6 +154,12 @@ impl SendPath {
         }
     }
 
+    pub(crate) fn take_data(&mut self) -> Option<Vec<u8>> {
+        self.maybe_refresh_traffic_keys();
+        self.perhaps_write_key_update();
+        self.sendable_tls.pop()
+    }
+
     pub(crate) fn send_close_notify(&mut self) {
         if self.has_sent_close_notify {
             return;
