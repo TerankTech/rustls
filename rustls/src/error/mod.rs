@@ -1524,6 +1524,14 @@ pub enum ApiMisuse {
     /// [`ServerConnection::split()`]: crate::server::ServerConnection::split()
     /// [`ClientConnection::split()`]: crate::client::ClientConnection::split()
     SplitWithPendingBuffers,
+
+    /// An output buffer provided for encryption was too small.
+    EncryptBufferTooSmall {
+        /// The minimum required buffer length
+        required: usize,
+        /// The buffer length actually provided
+        provided: usize,
+    },
 }
 
 impl fmt::Display for ApiMisuse {

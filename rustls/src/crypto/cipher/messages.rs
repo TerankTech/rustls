@@ -1,10 +1,11 @@
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::{Deref, DerefMut, Range};
+use core::slice;
 
 use crate::crypto::cipher::EncryptionState;
 use crate::enums::{ContentType, ProtocolVersion};
-use crate::error::{Error, InvalidMessage, PeerMisbehaved};
+use crate::error::{ApiMisuse, Error, InvalidMessage, PeerMisbehaved};
 use crate::msgs::{Codec, HEADER_SIZE, MAX_FRAGMENT_LEN, Reader, hex, read_opaque_message_header};
 
 /// A TLS message with encoded (but not necessarily encrypted) payload.
@@ -226,22 +227,22 @@ impl<'a> OutboundPlain<'a> {
 
     /// Append all bytes to a vector
     pub fn copy_to_vec(&self, vec: &mut Vec<u8>) {
-        match *self {
-            Self::Single(chunk) => vec.extend_from_slice(chunk),
-            Self::Multiple { chunks, start, end } => {
-                let mut size = 0;
-                for chunk in chunks.iter() {
-                    let psize = size;
-                    let len = chunk.len();
-                    size += len;
-                    if size <= start || psize >= end {
-                        continue;
-                    }
-                    let start = start.saturating_sub(psize);
-                    let end = if end - psize < len { end - psize } else { len };
-                    vec.extend_from_slice(&chunk[start..end]);
-                }
-            }
+        for chunk in self.chunks() {
+            vec.extend_from_slice(chunk);
+        }
+    }
+
+    /// Iterate over the payload's chunks of bytes, in order.
+    ///
+    /// Empty chunks are not yielded.
+    pub fn chunks(&self) -> impl Iterator<Item = &[u8]> + '_ {
+        match self {
+            Self::Single(chunk) => Chunks::Single((!chunk.is_empty()).then_some(*chunk)),
+            Self::Multiple { chunks, start, end } => Chunks::Multiple {
+                chunks: chunks.iter(),
+                skip: *start,
+                remaining: end - start,
+            },
         }
     }
 
@@ -282,6 +283,50 @@ impl<'a> OutboundPlain<'a> {
         match self {
             Self::Single(chunk) => chunk.len(),
             Self::Multiple { start, end, .. } => end - start,
+        }
+    }
+}
+
+/// Iterator over an [`OutboundPlain`]'s chunks, returned by [`OutboundPlain::chunks()`].
+enum Chunks<'a> {
+    Single(Option<&'a [u8]>),
+    Multiple {
+        /// Chunks not yet visited, including any leading ones `skip` covers.
+        chunks: slice::Iter<'a, &'a [u8]>,
+        /// How many leading bytes remain to be skipped.
+        skip: usize,
+        /// How many bytes remain to be yielded.
+        remaining: usize,
+    },
+}
+
+impl<'a> Iterator for Chunks<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Single(chunk) => chunk.take(),
+            Self::Multiple {
+                chunks,
+                skip,
+                remaining,
+            } => loop {
+                if *remaining == 0 {
+                    return None;
+                }
+
+                let chunk = chunks.next()?;
+                if chunk.len() <= *skip {
+                    *skip -= chunk.len();
+                    continue;
+                }
+
+                let chunk = &chunk[*skip..];
+                *skip = 0;
+                let take = Ord::min(chunk.len(), *remaining);
+                *remaining -= take;
+                return Some(&chunk[..take]);
+            },
         }
     }
 }
@@ -357,6 +402,71 @@ impl AsMut<[u8]> for OutboundOpaque {
 impl<'a> Extend<&'a u8> for OutboundOpaque {
     fn extend<T: IntoIterator<Item = &'a u8>>(&mut self, iter: T) {
         self.payload.extend(iter)
+    }
+}
+
+/// A fixed-size buffer into which a [`MessageEncrypter`][] writes an encrypted message payload.
+///
+/// This wraps the output buffer passed to [`MessageEncrypter::encrypt()`][], tracking how
+/// much of it has been written as the append methods fill it front-to-back. It writes
+/// into caller-owned memory and cannot grow, instead the append methods panic if a write
+/// would overflow the buffer and it is the caller's responsibility to avoid this.
+///
+/// [`MessageEncrypter`]: crate::crypto::cipher::MessageEncrypter
+/// [`MessageEncrypter::encrypt()`]: crate::crypto::cipher::MessageEncrypter::encrypt()
+pub struct EncryptBuffer<'a> {
+    buf: &'a mut [u8],
+    used: usize,
+}
+
+impl<'a> EncryptBuffer<'a> {
+    /// Wrap the first `len` bytes of `out`, all of which are as yet unwritten.
+    ///
+    /// Returns [`ApiMisuse::EncryptBufferTooSmall`] if `out` is shorter than `len` bytes.
+    pub fn new(out: &'a mut [u8], len: usize) -> Result<Self, Error> {
+        let provided = out.len();
+        match out.get_mut(..len) {
+            Some(buf) => Ok(Self { buf, used: 0 }),
+            None => Err(ApiMisuse::EncryptBufferTooSmall {
+                required: len,
+                provided,
+            }
+            .into()),
+        }
+    }
+
+    /// Append bytes from a slice.
+    ///
+    /// Panics if the write would extend beyond the buffer wrapped by [`Self::new()`].
+    pub fn extend_from_slice(&mut self, slice: &[u8]) {
+        self.buf[self.used..self.used + slice.len()].copy_from_slice(slice);
+        self.used += slice.len();
+    }
+
+    /// Append bytes from an `OutboundPlain`'s chunks.
+    ///
+    /// Panics if the write would extend beyond the buffer wrapped by [`Self::new()`].
+    pub fn extend_from_chunks(&mut self, chunks: &OutboundPlain<'_>) {
+        match chunks {
+            // for the common case with a single chunk we want to avoid iteration overhead.
+            OutboundPlain::Single(chunk) => self.extend_from_slice(chunk),
+            chunks => {
+                for chunk in chunks.chunks() {
+                    self.extend_from_slice(chunk);
+                }
+            }
+        }
+    }
+
+    /// Consume this value, returning the written prefix of the wrapped buffer.
+    pub fn into_written(self) -> &'a [u8] {
+        &self.buf[..self.used]
+    }
+}
+
+impl AsMut<[u8]> for EncryptBuffer<'_> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[..self.used]
     }
 }
 
@@ -503,6 +613,57 @@ mod tests {
     use std::{println, vec};
 
     use super::*;
+
+    #[test]
+    fn encrypt_buffer_appends() {
+        let mut space = [0u8; 8];
+        let mut buf = EncryptBuffer::new(&mut space[..], 6).unwrap();
+        buf.extend_from_slice(&[1, 2]);
+        buf.extend_from_chunks(&OutboundPlain::new(&[&[3u8, 4][..], &[5][..]]));
+        buf.extend_from_slice(&[6]);
+        assert_eq!(buf.as_mut(), &mut [1, 2, 3, 4, 5, 6]);
+        assert_eq!(buf.into_written(), &[1, 2, 3, 4, 5, 6]);
+        assert_eq!(space, [1, 2, 3, 4, 5, 6, 0, 0]);
+    }
+
+    #[test]
+    fn encrypt_buffer_rejects_short_buffer() {
+        let mut space = [0u8; 4];
+        assert!(matches!(
+            EncryptBuffer::new(&mut space[..], 5),
+            Err(Error::ApiMisuse(ApiMisuse::EncryptBufferTooSmall {
+                required: 5,
+                provided: 4,
+            }))
+        ));
+    }
+
+    #[test]
+    fn chunks_iteration() {
+        // `Single` yields its chunk, unless empty
+        assert_eq!(
+            OutboundPlain::Single(&[1, 2, 3])
+                .chunks()
+                .collect::<Vec<_>>(),
+            [&[1u8, 2, 3][..]],
+        );
+        assert_eq!(
+            OutboundPlain::new_empty()
+                .chunks()
+                .count(),
+            0
+        );
+
+        // `Multiple` yields the in-window part of each chunk, skipping
+        // empty chunks
+        let owner: Vec<&[u8]> = vec![&[], &[1, 2, 3], &[], &[4, 5], &[], &[6, 7], &[]];
+        let (_, tail) = OutboundPlain::new(&owner).split_at(1);
+        let (window, _) = tail.split_at(5);
+        assert_eq!(
+            window.chunks().collect::<Vec<_>>(),
+            [&[2u8, 3][..], &[4, 5][..], &[6][..]],
+        );
+    }
 
     #[test]
     fn split_at_with_single_slice() {
