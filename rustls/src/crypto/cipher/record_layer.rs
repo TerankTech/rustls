@@ -32,9 +32,27 @@ impl EncryptionState {
     ///
     /// `plain` is a TLS message we'd like to send.  This function
     /// panics if the requisite keying material hasn't been established yet.
-    pub(crate) fn encrypt_outgoing(&mut self, plain: EncodedMessage<OutboundPlain<'_>>) -> Vec<u8> {
+    ///
+    /// `record` is a spent buffer to reuse for the output (it may have any
+    /// length and contents, which are wholly overwritten). Pass an empty
+    /// vector if none is available.
+    pub(crate) fn encrypt_outgoing(
+        &mut self,
+        plain: EncodedMessage<OutboundPlain<'_>>,
+        mut record: Vec<u8>,
+    ) -> Vec<u8> {
+        // The buffer is overwritten in full below, so a reused buffer's
+        // existing initialized length is kept as-is and only newly-grown space
+        // needs zero-filling. A fresh buffer is allocated pre-zeroed.
         let needed = HEADER_SIZE + self.encrypted_len(plain.payload.len());
-        let mut record = vec![0u8; needed];
+        if record.capacity() == 0 {
+            record = vec![0u8; needed];
+        } else if record.len() < needed {
+            record.resize(needed, 0);
+        } else {
+            record.truncate(needed);
+        }
+
         let written = self.encrypt_outgoing_into(plain, &mut record);
         record.truncate(written);
         record
