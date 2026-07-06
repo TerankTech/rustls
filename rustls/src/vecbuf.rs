@@ -96,11 +96,17 @@ impl ChunkVecBuffer {
         if self.chunks.is_empty() {
             return Vec::new();
         }
-        mem::take(&mut self.chunks).into()
+
+        let mut chunks = Vec::from(mem::take(&mut self.chunks));
+        // slice off `prefix_used` if needed (uncommon)
+        let prefix = mem::take(&mut self.prefix_used);
+        chunks[0].drain(0..prefix);
+        chunks
     }
 
     pub(crate) fn take_one_vec(&mut self) -> Vec<u8> {
-        let Some(mut first) = self.chunks.pop_front() else {
+        // `pop()` (unlike `pop_front()`) slices off `prefix_used`
+        let Some(mut first) = self.pop() else {
             return Vec::new();
         };
 
@@ -247,6 +253,23 @@ mod tests {
         let mut buf = [0u8; 12];
         assert_eq!(cvb.read(&mut buf), 12);
         assert_eq!(buf.to_vec(), b"helloworldhe".to_vec());
+    }
+
+    #[test]
+    fn take_slices_off_consumed_prefix() {
+        let mut cvb = ChunkVecBuffer::new(None);
+        cvb.append(b"hello".to_vec());
+        cvb.append(b"world".to_vec());
+        assert_eq!(cvb.read(&mut [0u8; 3]), 3);
+        assert_eq!(cvb.take(), [b"lo".to_vec(), b"world".to_vec()]);
+        assert_eq!(cvb.len(), 0);
+
+        let mut cvb = ChunkVecBuffer::new(None);
+        cvb.append(b"hello".to_vec());
+        cvb.append(b"world".to_vec());
+        assert_eq!(cvb.read(&mut [0u8; 3]), 3);
+        assert_eq!(cvb.take_one_vec(), b"loworld");
+        assert_eq!(cvb.len(), 0);
     }
 
     #[test]
