@@ -134,7 +134,13 @@ fn split_incremental() {
 fn split_write_into() {
     let (mut client, mut server) =
         make_pair(KeyType::EcdsaP256, &super::provider::DEFAULT_PROVIDER);
-    do_handshake(&mut client, &mut server);
+    let (mut client_input, mut server_input) = (VecInput::default(), VecInput::default());
+    do_handshake(
+        &mut client_input,
+        &mut client,
+        &mut server_input,
+        &mut server,
+    );
 
     let SplitConnection {
         send: mut client_send,
@@ -166,7 +172,13 @@ fn split_write_into() {
 fn split_write_into_limited_space() {
     let (mut client, mut server) =
         make_pair(KeyType::EcdsaP256, &super::provider::DEFAULT_PROVIDER);
-    do_handshake(&mut client, &mut server);
+    let (mut client_input, mut server_input) = (VecInput::default(), VecInput::default());
+    do_handshake(
+        &mut client_input,
+        &mut client,
+        &mut server_input,
+        &mut server,
+    );
 
     let SplitConnection {
         send: mut client_send,
