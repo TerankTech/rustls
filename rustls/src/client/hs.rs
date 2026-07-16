@@ -79,6 +79,14 @@ impl StateMachine for ClientState {
             _ => Err(Error::HandshakeNotComplete),
         }
     }
+
+    fn on_app_data_fast(&mut self) -> bool {
+        match self {
+            Self::Tls12(sm) => sm.on_app_data_fast(),
+            Self::Tls13(sm) => sm.on_app_data_fast(),
+            _ => false,
+        }
+    }
 }
 
 pub(crate) struct ExpectServerHello {

@@ -60,6 +60,13 @@ impl Tls12State {
             Self::Traffic(e) => e.handle(input, output),
         }
     }
+
+    /// See [`crate::conn::StateMachine::on_app_data_fast`]: mirrors the
+    /// `MessagePayload::ApplicationData` arm of `ExpectTraffic::handle`,
+    /// which has no per-record bookkeeping in TLS 1.2.
+    pub(crate) fn on_app_data_fast(&mut self) -> bool {
+        matches!(self, Self::Traffic(_))
+    }
 }
 
 mod client_hello {

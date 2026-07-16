@@ -83,6 +83,18 @@ impl Tls13State {
             Self::QuicTraffic(e) => e.handle(input, output),
         }
     }
+
+    /// See [`crate::conn::StateMachine::on_app_data_fast`]: mirrors the
+    /// `MessagePayload::ApplicationData` arm of `ExpectTraffic::handle`.
+    pub(crate) fn on_app_data_fast(&mut self) -> bool {
+        match self {
+            Self::Traffic(e) => {
+                e.counters.received_app_data();
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 pub(crate) static TLS13_HANDLER: &dyn ClientHandler<Tls13CipherSuite> = &Handler;

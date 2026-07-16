@@ -137,6 +137,28 @@ impl ReceivePath {
                 return Err(PeerMisbehaved::EmptyFragment.into());
             }
 
+            // Fast path for post-handshake application data: skip the
+            // generic message parse and boxed-state `handle()` round trip.
+            // `on_app_data_fast()` returns true only for quiescent traffic
+            // states whose complete handling of this content type is a
+            // temper-counter reset (performed inside that call) plus
+            // `received_plaintext()`. Every check that applies to
+            // `ApplicationData` has already run: record decryption,
+            // handshake-interleave rejection and empty/consecutive-fragment
+            // limits in `deframe()`. The `receive_message()` branches
+            // skipped here (TLS 1.3 CCS drop, alert parse, renegotiation
+            // rejection) match other content types only, and
+            // `Message::try_from` is a pure payload wrap for this one.
+            if msg.typ == ContentType::ApplicationData && st.on_app_data_fast() {
+                output.received_plaintext(Payload::Borrowed(msg.payload));
+                if let Some(payload) = plaintext.take() {
+                    *state = Ok(st);
+                    return Ok(Some(payload));
+                }
+                input.discard(self.deframer.take_discard());
+                continue;
+            }
+
             let hs_aligned = output.recv.deframer.aligned();
             let result = match output
                 .recv
