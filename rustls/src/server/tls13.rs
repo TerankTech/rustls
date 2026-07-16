@@ -71,6 +71,19 @@ impl Tls13State {
             Self::QuicTraffic(e) => e.handle(input, output),
         }
     }
+
+    /// See [`crate::conn::StateMachine::on_app_data_fast`]: mirrors the
+    /// `MessagePayload::ApplicationData` arm of `ExpectTraffic::handle`.
+    /// Early-data states keep the generic path.
+    pub(crate) fn on_app_data_fast(&mut self) -> bool {
+        match self {
+            Self::Traffic(e) => {
+                e.counters.received_app_data();
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 mod client_hello {
