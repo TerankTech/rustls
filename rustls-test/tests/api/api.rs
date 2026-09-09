@@ -1837,9 +1837,11 @@ fn tls13_packed_handshake() {
         .write_tls(&mut io::Cursor::new(&mut hello))
         .unwrap();
 
-    let first_flight = include_bytes!("../data/bug2040-message-1.bin");
+    let mut first_flight = include_bytes!("../data/bug2040-message-1.bin").to_vec();
+    // the recording predates this connection's `session_id`
+    encoding::echo_session_id(&hello, &mut first_flight);
     client_input
-        .read(&mut io::Cursor::new(first_flight))
+        .read(&mut io::Cursor::new(&first_flight))
         .unwrap();
     client
         .process_new_packets(&mut client_input)

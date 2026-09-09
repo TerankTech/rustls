@@ -13,7 +13,7 @@ use super::{Tls12Session, Tls13ClientSessionInput, Tls13Session};
 use crate::client::{ClientConfig, Resumption, Tls12Resumption};
 use crate::crypto::cipher::{EncodedMessage, MessageEncrypter, Payload, encode_record_header};
 use crate::crypto::kx::{self, NamedGroup, SharedSecret, StartedKeyExchange, SupportedKxGroup};
-use crate::crypto::test_provider::FakeKeyExchangeGroup;
+use crate::crypto::test_provider::{FakeKeyExchangeGroup, KEY_EXCHANGE_GROUP, TLS13_TEST_SUITE};
 use crate::crypto::tls13::OkmBlock;
 use crate::crypto::{
     CipherSuite, Credentials, CryptoProvider, Identity, SignatureScheme, SingleCredential,
@@ -209,6 +209,59 @@ fn test_client_rejects_hrr_with_varied_session_id() {
         conn.process_new_packets(&mut input)
             .unwrap_err(),
         PeerMisbehaved::IllegalHelloRetryRequestWithWrongSessionId.into()
+    );
+}
+
+#[test]
+fn test_client_rejects_server_hello_with_varied_session_id() {
+    let config = ClientConfig::builder(Arc::new(tls13_only(TEST_PROVIDER.clone())))
+        .with_root_certificates(roots())
+        .with_no_client_auth()
+        .unwrap();
+    let mut conn = Arc::new(config)
+        .connect(ServerName::try_from("localhost").unwrap())
+        .build()
+        .unwrap();
+    let mut sent = Vec::new();
+    conn.write_tls(&mut sent).unwrap();
+
+    // server replies with an otherwise-acceptable ServerHello, but does not
+    // echo `session_id` as required.
+    let sh = Message {
+        version: ProtocolVersion::TLSv1_3,
+        payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ServerHello(
+            ServerHelloPayload {
+                random: Random([0; 32]),
+                compression_method: Compression::Null,
+                cipher_suite: TLS13_TEST_SUITE.common.suite,
+                legacy_version: ProtocolVersion::TLSv1_3,
+                session_id: SessionId::empty(),
+                extensions: Box::new(ServerExtensions {
+                    key_share: Some(KeyShareEntry {
+                        group: KEY_EXCHANGE_GROUP.name(),
+                        payload: SizedPayload::from(
+                            KEY_EXCHANGE_GROUP
+                                .start()
+                                .unwrap()
+                                .into_single()
+                                .pub_key()
+                                .to_vec(),
+                        ),
+                    }),
+                    ..ServerExtensions::default()
+                }),
+            },
+        ))),
+    };
+
+    let mut input = VecInput::default();
+    input
+        .read(&mut sh.into_wire_bytes().as_slice())
+        .unwrap();
+    assert_eq!(
+        conn.process_new_packets(&mut input)
+            .unwrap_err(),
+        PeerMisbehaved::UnmatchedSessionId.into()
     );
 }
 
@@ -522,7 +575,7 @@ fn client_requiring_rpk_receives_server_ee(
                 compression_method: Compression::Null,
                 cipher_suite: CipherSuite::TLS13_AES_128_GCM_SHA256,
                 legacy_version: ProtocolVersion::TLSv1_3,
-                session_id: SessionId::empty(),
+                session_id: client_hello_in(&sent).session_id,
                 extensions: Box::new(ServerExtensions {
                     key_share: Some(KeyShareEntry {
                         group: NamedGroup::X25519,
@@ -774,8 +827,11 @@ fn client_hello_sent_for_config(config: ClientConfig) -> Result<ClientHelloPaylo
         .build()?;
     let mut bytes = Vec::new();
     conn.write_tls(&mut bytes).unwrap();
+    Ok(client_hello_in(&bytes))
+}
 
-    let message = EncodedMessage::<Payload<'_>>::read(&mut Reader::new(&bytes))
+fn client_hello_in(flight: &[u8]) -> ClientHelloPayload {
+    let message = EncodedMessage::<Payload<'_>>::read(&mut Reader::new(flight))
         .unwrap()
         .into_owned();
     match Message::try_from(&message).unwrap() {
@@ -786,7 +842,7 @@ fn client_hello_sent_for_config(config: ClientConfig) -> Result<ClientHelloPaylo
                     ..
                 },
             ..
-        } => Ok(ch),
+        } => ch,
         other => panic!("unexpected message {other:?}"),
     }
 }

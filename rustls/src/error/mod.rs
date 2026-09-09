@@ -1055,6 +1055,7 @@ pub enum PeerMisbehaved {
     TooManyWarningAlertsReceived,
     TooMuchEarlyDataReceived,
     UnexpectedCleartextExtension,
+    UnmatchedSessionId,
     UnsolicitedCertExtension,
     UnsolicitedEncryptedExtension,
     UnsolicitedSctList,
