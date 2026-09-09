@@ -10,7 +10,10 @@ use std::vec;
 use pki_types::{CertificateDer, FipsStatus, ServerName, UnixTime};
 
 use super::{Tls12Session, Tls13ClientSessionInput, Tls13Session};
-use crate::client::{ClientConfig, Resumption, Tls12Resumption};
+use crate::client::{
+    ClientConfig, ClientSessionKey, ClientSessionMemoryCache, ClientSessionStore, Resumption,
+    Tls12Resumption,
+};
 use crate::crypto::cipher::{EncodedMessage, MessageEncrypter, Payload, encode_record_header};
 use crate::crypto::kx::{self, NamedGroup, SharedSecret, StartedKeyExchange, SupportedKxGroup};
 use crate::crypto::test_provider::{FakeKeyExchangeGroup, KEY_EXCHANGE_GROUP, TLS13_TEST_SUITE};
@@ -262,6 +265,81 @@ fn test_client_rejects_server_hello_with_varied_session_id() {
         conn.process_new_packets(&mut input)
             .unwrap_err(),
         PeerMisbehaved::UnmatchedSessionId.into()
+    );
+}
+
+#[test]
+fn test_client_rejects_tls12_server_hello_echoing_compatibility_session_id() {
+    let config = ClientConfig::builder(Arc::new(TEST_PROVIDER.clone()))
+        .with_root_certificates(roots())
+        .with_no_client_auth()
+        .unwrap();
+    let store = Arc::new(ClientSessionMemoryCache::new(256));
+    let config = Arc::new(ClientConfig {
+        resumption: Resumption::store(store.clone()),
+        ..config
+    });
+
+    // a cached TLS 1.3 ticket is not a TLS 1.2 session, so the client still
+    // sends a compatibility `session_id` a TLS 1.2 server cannot know.
+    let server_name = ServerName::try_from("localhost").unwrap();
+    store.insert_tls13_ticket(
+        ClientSessionKey {
+            config_hash: config.config_hash(),
+            server_name: server_name.clone(),
+        },
+        Tls13Session::new(
+            &NewSessionTicketPayloadTls13 {
+                lifetime: Duration::from_secs(1800),
+                age_add: 0x1234_5678,
+                nonce: SizedPayload::empty(),
+                ticket: Arc::new(SizedPayload::from(b"ticket".to_vec())),
+                extensions: NewSessionTicketExtensions::default(),
+            },
+            Tls13ClientSessionInput {
+                suite: TEST_PROVIDER.tls13_cipher_suites[0],
+                peer_identity: Identity::RawPublicKey(pki_types::SubjectPublicKeyInfoDer::from(
+                    &b"spki"[..],
+                )),
+                quic_params: None,
+            },
+            &[0x55; 32],
+            UnixTime::now(),
+        ),
+    );
+
+    let mut conn = config
+        .connect(server_name)
+        .build()
+        .unwrap();
+    let mut sent = Vec::new();
+    conn.write_tls(&mut sent).unwrap();
+
+    let sh = Message {
+        version: ProtocolVersion::TLSv1_2,
+        payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ServerHello(
+            ServerHelloPayload {
+                random: Random([0; 32]),
+                compression_method: Compression::Null,
+                cipher_suite: CipherSuite(0xff12),
+                legacy_version: ProtocolVersion::TLSv1_2,
+                session_id: client_hello_in(&sent).session_id,
+                extensions: Box::new(ServerExtensions {
+                    extended_master_secret_ack: Some(()),
+                    ..ServerExtensions::default()
+                }),
+            },
+        ))),
+    };
+
+    let mut input = VecInput::default();
+    input
+        .read(&mut sh.into_wire_bytes().as_slice())
+        .unwrap();
+    assert_eq!(
+        conn.process_new_packets(&mut input)
+            .unwrap_err(),
+        PeerMisbehaved::ServerEchoedCompatibilitySessionId.into()
     );
 }
 
