@@ -1948,6 +1948,35 @@ fn excess_client_hello_acceptor() {
 }
 
 #[test]
+fn client_hello_acceptor_rejects_record_containing_subsequent_messages() {
+    let mut hello = encoding::basic_client_hello(vec![]);
+    hello.extend(encoding::handshake_framing(
+        HandshakeType::EncryptedExtensions,
+        vec![0, 0],
+    ));
+    hello.extend(encoding::handshake_framing(
+        HandshakeType::Finished,
+        vec![0; 32],
+    ));
+    let hello = encoding::message_framing(ContentType::Handshake, ProtocolVersion::TLSv1_2, hello);
+
+    let mut acceptor = Acceptor::default();
+    let mut input = VecInput::default();
+    input
+        .read(&mut io::Cursor::new(hello))
+        .unwrap();
+    let mut error_with_alert = acceptor.accept(&mut input).unwrap_err();
+    assert_eq!(
+        error_with_alert.error,
+        PeerMisbehaved::KeyEpochWithPendingFragment.into()
+    );
+    assert_eq!(
+        error_with_alert.take_tls_data(),
+        Some(encoding::alert(AlertDescription::UnexpectedMessage, &[]))
+    );
+}
+
+#[test]
 fn server_invalid_sni_policy() {
     const SERVER_NAME_GOOD: &str = "LXXXxxxXXXR";
     const SERVER_NAME_BAD: &str = "[XXXxxxXXX]";

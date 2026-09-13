@@ -664,10 +664,14 @@ fn do_quic_handshake(client: &mut impl Connection, server: &mut impl Connection)
 }
 
 fn quic_transfer(sender: &mut impl Connection, receiver: &mut impl Connection) {
+    // Deliver each key epoch's handshake data in its own `read_hs` call, as a real QUIC
+    // implementation would: handshake messages must not span a key change.
     let mut buf = Vec::new();
     while let Some(_change) = sender.write_hs(&mut buf) {
-        // In a real QUIC implementation, we would handle key changes here
-        // For testing, we just continue
+        if !buf.is_empty() {
+            receiver.read_hs(&buf).unwrap();
+            buf.clear();
+        }
     }
 
     if !buf.is_empty() {
