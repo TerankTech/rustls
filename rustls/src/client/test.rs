@@ -310,6 +310,53 @@ fn test_client_rejects_no_extended_master_secret_extension_when_require_ems_or_f
 }
 
 #[test]
+fn test_client_rejects_non_empty_renegotiation_info_in_initial_handshake() {
+    let config = Arc::new(
+        ClientConfig::builder(Arc::new(TEST_PROVIDER.clone()))
+            .with_root_certificates(roots())
+            .with_no_client_auth()
+            .unwrap(),
+    );
+    let mut conn = config
+        .connect(ServerName::try_from("localhost").unwrap())
+        .build()
+        .unwrap();
+    let mut sent = Vec::new();
+    conn.write_tls(&mut sent).unwrap();
+
+    // a TLS 1.2 server behaving as if it were renegotiating an existing
+    // connection: `renegotiated_connection` carries verify_data values
+    // instead of being empty.
+    let sh = Message {
+        version: ProtocolVersion::TLSv1_2,
+        payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ServerHello(
+            ServerHelloPayload {
+                legacy_version: ProtocolVersion::TLSv1_2,
+                random: Random::new(config.provider().secure_random).unwrap(),
+                session_id: SessionId::empty(),
+                cipher_suite: CipherSuite(0xff12),
+                compression_method: Compression::Null,
+                extensions: Box::new(ServerExtensions {
+                    extended_master_secret_ack: Some(()),
+                    renegotiation_info: Some(SizedPayload::from(vec![0x55; 24])),
+                    ..ServerExtensions::default()
+                }),
+            },
+        ))),
+    };
+    let mut input = VecInput::default();
+    input
+        .read(&mut sh.into_wire_bytes().as_slice())
+        .unwrap();
+
+    assert_eq!(
+        conn.process_new_packets(&mut input)
+            .unwrap_err(),
+        PeerMisbehaved::NonEmptyRenegotiationInfo.into()
+    );
+}
+
+#[test]
 fn cas_extension_in_client_hello_if_server_verifier_requests_it() {
     let cas_sending_server_verifier =
         ServerVerifierWithAuthorityNames(Arc::from(vec![DistinguishedName::from(

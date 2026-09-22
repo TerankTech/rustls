@@ -2130,6 +2130,9 @@ fn handle_err(opts: &Options, err: Error) -> ! {
         Error::PeerMisbehaved(
             PeerMisbehaved::IllegalAlertLevel(_, _) | PeerMisbehaved::IllegalWarningAlert(_),
         ) => quit(":BAD_ALERT:"),
+        Error::PeerMisbehaved(PeerMisbehaved::NonEmptyRenegotiationInfo) => {
+            quit(":RENEGOTIATION_MISMATCH:")
+        }
         Error::PeerMisbehaved(_) => panic!("!!! please add error mapping for {err:?}"),
         Error::AlertReceived(AlertDescription::UnexpectedMessage) => quit(":BAD_ALERT:"),
         Error::AlertReceived(AlertDescription::DecompressionFailure) => {
