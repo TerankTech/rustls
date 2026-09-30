@@ -25,8 +25,8 @@ use crate::crypto::{
 use crate::enums::{CertificateType, ProtocolVersion};
 use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::msgs::{
-    CertificateChain, ClientHelloPayload, Codec, Compression, ECCurveType, EcParameters,
-    HEADER_SIZE, HandshakeMessagePayload, HandshakePayload, HelloRetryRequest,
+    CertificateChain, ChangeCipherSpecPayload, ClientHelloPayload, Codec, Compression, ECCurveType,
+    EcParameters, HEADER_SIZE, HandshakeMessagePayload, HandshakePayload, HelloRetryRequest,
     HelloRetryRequestExtensions, KeyShareEntry, MaybeEmpty, Message, MessagePayload,
     NewSessionTicketExtensions, NewSessionTicketPayloadTls13, Random, Reader, ServerEcdhParams,
     ServerExtensions, ServerHelloPayload, ServerKeyExchange, ServerKeyExchangeParams,
@@ -748,6 +748,85 @@ fn client_requiring_rpk_receives_server_ee(
     );
 }
 
+#[test]
+fn test_client_rejects_protected_change_cipher_spec() {
+    let provider = Arc::new(tls13_only(TEST_PROVIDER.clone()));
+    let fake_server_crypto = Arc::new(FakeServerCrypto::new(provider.clone()));
+    let mut config = ClientConfig::builder(provider)
+        .with_root_certificates(roots())
+        .with_no_client_auth()
+        .unwrap();
+    config.key_log = fake_server_crypto.clone();
+
+    let mut conn = Arc::new(config)
+        .connect(ServerName::try_from("localhost").unwrap())
+        .build()
+        .unwrap();
+    let mut sent = Vec::new();
+    conn.write_tls(&mut sent).unwrap();
+
+    let sh = Message {
+        version: ProtocolVersion::TLSv1_3,
+        payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ServerHello(
+            ServerHelloPayload {
+                random: Random([0; 32]),
+                compression_method: Compression::Null,
+                cipher_suite: TLS13_TEST_SUITE.common.suite,
+                legacy_version: ProtocolVersion::TLSv1_3,
+                session_id: client_hello_in(&sent).session_id,
+                extensions: Box::new(ServerExtensions {
+                    key_share: Some(KeyShareEntry {
+                        group: KEY_EXCHANGE_GROUP.name(),
+                        payload: SizedPayload::from(
+                            KEY_EXCHANGE_GROUP
+                                .start()
+                                .unwrap()
+                                .into_single()
+                                .pub_key()
+                                .to_vec(),
+                        ),
+                    }),
+                    ..ServerExtensions::default()
+                }),
+            },
+        ))),
+    };
+    let mut input = VecInput::default();
+    input
+        .read(&mut sh.into_wire_bytes().as_slice())
+        .unwrap();
+    conn.process_new_packets(&mut input)
+        .unwrap();
+
+    // A change_cipher_spec protected under the handshake keys is not a
+    // compatibility-mode CCS, and must not be dropped like one.
+    let ccs = Message {
+        version: ProtocolVersion::TLSv1_3,
+        payload: MessagePayload::ChangeCipherSpec(ChangeCipherSpecPayload),
+    };
+
+    let mut encrypter = fake_server_crypto.server_handshake_encrypter();
+    let ccs = EncodedMessage::<Payload<'_>>::from(ccs);
+    let ccs = ccs.borrow_outbound();
+    let mut enc_ccs = vec![0u8; HEADER_SIZE + encrypter.encrypted_payload_len(ccs.payload.len())];
+    let encrypted = encrypter
+        .encrypt(ccs, 0, &mut enc_ccs[HEADER_SIZE..])
+        .unwrap();
+
+    let (typ, version, len) = (encrypted.typ, encrypted.version, encrypted.payload.len());
+    enc_ccs.truncate(HEADER_SIZE + len);
+    enc_ccs[..HEADER_SIZE].copy_from_slice(&encode_record_header(typ, version, len));
+
+    input
+        .read(&mut enc_ccs.as_slice())
+        .unwrap();
+    assert_eq!(
+        conn.process_new_packets(&mut input)
+            .unwrap_err(),
+        PeerMisbehaved::IllegalMiddleboxChangeCipherSpec.into()
+    );
+}
+
 fn client_credentials(provider: &CryptoProvider) -> Credentials {
     let key = provider
         .key_provider
@@ -876,7 +955,7 @@ impl FakeServerCrypto {
             .get()
             .unwrap();
 
-        let cipher_suite = tls13_suite(CipherSuite::TLS13_AES_128_GCM_SHA256, &self.provider);
+        let cipher_suite = tls13_suite(TLS13_TEST_SUITE.common.suite, &self.provider);
         let expander = cipher_suite
             .hkdf_provider
             .expander_for_okm(&OkmBlock::new(secret));
