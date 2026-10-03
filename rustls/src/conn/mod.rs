@@ -902,6 +902,19 @@ pub(crate) trait StateMachine: Sized {
         self,
         send_keys: &Option<Box<KeyScheduleTrafficSend>>,
     ) -> Result<(PartiallyExtractedSecrets, Box<dyn KernelState + 'static>), Error>;
+
+    /// Fast acceptance test for one decrypted `ApplicationData` record.
+    ///
+    /// Returning `true` means this state is a quiescent post-handshake
+    /// traffic state whose complete handling of application data is
+    /// resetting its temper counters (done inside this call) plus
+    /// `Output::received_plaintext()`; the caller may then deliver the
+    /// payload directly and skip the generic message-parse and `handle()`
+    /// round trip. Any state that needs the generic path — handshake
+    /// states, early data, QUIC — returns `false`.
+    fn on_app_data_fast(&mut self) -> bool {
+        false
+    }
 }
 
 const DEFAULT_RECEIVED_PLAINTEXT_LIMIT: usize = 16 * 1024;

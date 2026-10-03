@@ -60,6 +60,13 @@ impl Tls12State {
             Self::Traffic(e) => e.handle(input, output),
         }
     }
+
+    /// See [`crate::conn::StateMachine::on_app_data_fast`]: mirrors the
+    /// `MessagePayload::ApplicationData` arm of `ExpectTraffic::handle`,
+    /// which has no per-record bookkeeping in TLS 1.2.
+    pub(crate) fn on_app_data_fast(&self) -> bool {
+        matches!(self, Self::Traffic(_))
+    }
 }
 
 mod client_hello {
@@ -1086,6 +1093,11 @@ impl ExpectTraffic {
         output: &mut dyn Output<'m>,
     ) -> Result<ServerState, Error> {
         match message.payload {
+            // The receive fast path (`Tls12State::on_app_data_fast()`) skips
+            // `handle()` for application data and relies on this arm doing
+            // nothing beyond `received_plaintext()`. Per-record bookkeeping
+            // added here must also run on that path; see the shared
+            // `received_app_data()` helper in tls13.rs.
             MessagePayload::ApplicationData(payload) => output.received_plaintext(payload),
             payload => {
                 return Err(inappropriate_message(

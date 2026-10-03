@@ -137,6 +137,38 @@ impl ReceivePath {
                 return Err(PeerMisbehaved::EmptyFragment.into());
             }
 
+            // Fast path for post-handshake application data: skip the
+            // generic message parse and boxed-state `handle()` round trip.
+            // `on_app_data_fast()` returns true only for quiescent traffic
+            // states whose complete handling of this content type is a
+            // temper-counter reset (performed inside that call) plus
+            // `received_plaintext()`. Every check that applies to
+            // `ApplicationData` has already run: record decryption,
+            // handshake-interleave rejection and empty/consecutive-fragment
+            // limits in `deframe()`. The `receive_message()` branches
+            // skipped here (TLS 1.3 CCS drop, alert parse, renegotiation
+            // rejection) match other content types only, and
+            // `Message::try_from` is a pure payload wrap for this one.
+            //
+            // Records arriving after a `close_notify` take the generic path:
+            // its `has_received_close_notify` check below ignores them, as
+            // RFC 8446 section 6.1 requires. Within one call that check
+            // already discards the rest of the input, but a caller can feed
+            // more data in a later call (`SliceInput`, a custom
+            // `TlsInputBuffer`).
+            if msg.typ == ContentType::ApplicationData
+                && !output.recv.has_received_close_notify
+                && st.on_app_data_fast()
+            {
+                output.received_plaintext(Payload::Borrowed(msg.payload));
+                if let Some(payload) = plaintext.take() {
+                    *state = Ok(st);
+                    return Ok(Some(payload));
+                }
+                input.discard(self.deframer.take_discard());
+                continue;
+            }
+
             let hs_aligned = output.recv.deframer.aligned();
             let result = match output
                 .recv
@@ -330,6 +362,11 @@ impl ReceivePath {
     ///
     /// Otherwise the caller must present the returned `Input` to the state machine to
     /// progress the connection.
+    ///
+    /// Application data received in a post-handshake traffic state does not reach
+    /// this function: `process_new_packets()` delivers it on a fast path (see
+    /// `StateMachine::on_app_data_fast()`). A check added here that must also apply
+    /// to such records has to be added to that fast path too.
     pub(crate) fn receive_message<'a>(
         &mut self,
         msg: EncodedMessage<&'a [u8]>,

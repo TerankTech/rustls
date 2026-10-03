@@ -2505,6 +2505,58 @@ fn test_data_after_close_notify_is_ignored() {
 }
 
 #[test]
+fn test_data_after_close_notify_in_later_call_is_ignored() {
+    // Like `test_data_after_close_notify_is_ignored()`, but the data written
+    // after the close_notify only arrives in a later `process_new_packets()`
+    // call, through an input buffer that never saw the close_notify.
+    let (mut client, mut server) = make_pair(KeyType::Rsa2048, &provider::DEFAULT_PROVIDER);
+    let mut client_input = VecInput::default();
+    let mut server_input = VecInput::default();
+    do_handshake(
+        &mut client_input,
+        &mut client,
+        &mut server_input,
+        &mut server,
+    );
+
+    client
+        .writer()
+        .write_all(b"before")
+        .unwrap();
+    client.send_close_notify();
+    transfer(&mut client, &mut server_input);
+    let io_state = server
+        .process_new_packets(&mut server_input)
+        .unwrap();
+    assert!(io_state.peer_has_closed());
+
+    let mut received_data = [0u8; 128];
+    let count = server
+        .reader()
+        .read(&mut received_data)
+        .unwrap();
+    assert_eq!(&received_data[..count], b"before");
+
+    client
+        .writer()
+        .write_all(b"after")
+        .unwrap();
+    let mut late_input = VecInput::default();
+    transfer(&mut client, &mut late_input);
+    server
+        .process_new_packets(&mut late_input)
+        .unwrap();
+
+    assert_eq!(
+        server
+            .reader()
+            .read(&mut received_data)
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn test_close_notify_sent_prior_to_handshake_complete() {
     let mut server = ServerConnection::new(Arc::new(make_server_config(
         KeyType::EcdsaP256,
