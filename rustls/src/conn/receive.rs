@@ -149,7 +149,17 @@ impl ReceivePath {
             // skipped here (TLS 1.3 CCS drop, alert parse, renegotiation
             // rejection) match other content types only, and
             // `Message::try_from` is a pure payload wrap for this one.
-            if msg.typ == ContentType::ApplicationData && st.on_app_data_fast() {
+            //
+            // Records arriving after a `close_notify` take the generic path:
+            // its `has_received_close_notify` check below ignores them, as
+            // RFC 8446 section 6.1 requires. Within one call that check
+            // already discards the rest of the input, but a caller can feed
+            // more data in a later call (`SliceInput`, a custom
+            // `TlsInputBuffer`).
+            if msg.typ == ContentType::ApplicationData
+                && !output.recv.has_received_close_notify
+                && st.on_app_data_fast()
+            {
                 output.received_plaintext(Payload::Borrowed(msg.payload));
                 if let Some(payload) = plaintext.take() {
                     *state = Ok(st);
