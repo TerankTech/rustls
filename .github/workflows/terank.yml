@@ -1,0 +1,108 @@
+# CI for the TerankTech fork (see FORK.md).
+#
+# The workflows inherited from upstream are disabled on this repository:
+# they serve upstream's needs (Windows and macOS, beta and nightly, MSRV,
+# coverage, benchmarks, docs deployment) and mostly run on upstream-only
+# arm64 runners that never start here. This workflow runs the validation
+# FORK.md prescribes, on standard x86 runners.
+name: terank
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ['terank/in-place-encrypter']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTFLAGS: --deny warnings
+  AWS_LC_SYS_NO_JITTER_ENTROPY: 1
+
+jobs:
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (rustls, all features)
+        run: cargo clippy --locked -p rustls --all-targets --all-features
+
+      - name: Clippy (providers and tests)
+        run: cargo clippy --locked -p rustls-aws-lc-rs -p rustls-ring -p rustls-test --all-targets
+
+  test:
+    name: Unit and API tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rustls unit tests
+        run: cargo test --locked --release -p rustls --lib
+
+      - name: API tests (aws-lc-rs and ring)
+        run: cargo test --locked --release -p rustls-test --test api
+
+  bogo:
+    name: BoGo test suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install golang toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+
+      - name: Run test suite (aws-lc-rs)
+        working-directory: bogo
+        run: ./runme
+        env:
+          BOGO_SHIM_PROVIDER: aws-lc-rs
+
+      - name: Run test suite (ring)
+        working-directory: bogo
+        run: ./runme
+        env:
+          BOGO_SHIM_PROVIDER: ring
+
+  audit:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check advisories, bans, licenses and sources
+        uses: EmbarkStudios/cargo-deny-action@v2
