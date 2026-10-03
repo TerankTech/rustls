@@ -40,6 +40,23 @@ In branch order:
    - "Ignore application data after close_notify on the fast path"
    - "Share traffic-state application data bookkeeping with the fast path"
    - "Add an ignored split-mode receive benchmark"
+4. **Upstream hardening backports**, cherry-picked with `-x` in this order. Each
+   commit's "Backport notes" record its conflicts and test adaptations.
+   - `035b26f7`: the server's chosen cipher suite must be one we offered.
+   - `e3fab0e1`: bound the ticket age calculation.
+   - `3da1f723`: saturating arithmetic for the PSK binder suffix.
+   - `5fae3042`: TLS 1.2 requires a known signature algorithm.
+   - `c566ba12`: reject a TLS 1.3 ServerHello that does not echo
+     `legacy_session_id`.
+   - `015713a3`: reject non-empty `renegotiation_info` in initial handshakes.
+   - `99f2358c`: check the compatibility session id against TLS 1.2
+     resumption.
+   - `370b1336`: reject change_cipher_spec records that arrive encrypted.
+   - `f5f7bf50`: keep session secrets out of `Debug` output.
+
+   These add `PeerMisbehaved::UnmatchedSessionId` and
+   `PeerMisbehaved::NonEmptyRenegotiationInfo`. `PeerMisbehaved` is
+   `#[non_exhaustive]`, so this is not an API break.
 
 ## Application data fast path
 
@@ -57,6 +74,8 @@ buffered connection API and split mode use this loop.
   - decryption with tag verification, with the correct sequence number
   - the plaintext length limits, enforced by the provider's decrypter
   - the rule that application data must be encrypted
+  - rejection of change_cipher_spec records that arrive encrypted (patch 4,
+    `370b1336`)
   - rejection of records interleaved with a partial handshake message
     (`Deframer::aligned()`, tightened by patch 2)
   - the consecutive empty record limit
@@ -130,9 +149,12 @@ cargo fmt --all -- --check
 cargo test --release -p rustls-test --test split_receive_bench -- --ignored --nocapture
 ```
 
-Reference results for this branch: 219 rustls unit tests and 516 API tests pass.
-BoGo with aws-lc-rs gives 1385 passed, 0 failed and 723 unimplemented, the same
-result set as `ff52d536` without the fast path.
+Reference results for this branch:
+- 226 rustls unit tests and 516 API tests pass.
+- BoGo with aws-lc-rs: 1385 passed, 0 failed, 723 unimplemented.
+- BoGo with ring: 1301 passed, 0 failed, 703 unimplemented.
+
+Both BoGo result sets are the same as at `ff52d536`, before patches 3 and 4.
 
 Then check trrs-net-lib against the new commit: point its three rustls
 dependencies at it and run
@@ -142,18 +164,41 @@ dependencies at it and run
 ## Upstream hardening not in this fork
 
 Upstream `main` has landed hardening since the base that this fork does not
-carry. Only patch 2 had an advisory. The client-relevant ones:
+carry. Only patch 2 had an advisory. Patch 4 backported the client-relevant
+fixes that apply with small adaptations. Still missing:
 
-- `035b26f7`: check the server's chosen cipher suite against the offer
-- `c566ba12`: reject a ServerHello that does not echo `legacy_session_id`
-- `99f2358c`: check the compatibility session id against TLS 1.2 resumption
-- `370b1336`: reject protected change_cipher_spec records
-- `015713a3`: reject non-empty `renegotiation_info` in initial handshakes
-- `5fae3042`: TLS 1.2 requires a known signature algorithm
-- `2cd5cc10`: allow only one outstanding KeyUpdate request
-- `453374fa`: return an error when encryption limits are exhausted
-- `1e894afa`: refuse further encryption after a fatal alert
-- `86e06619`: account for encryption overhead in `max_fragment_size`
+- **Upstream rewrote the send path, so these need reimplementing rather than
+  cherry-picking:**
+  - `2cd5cc10`: allow only one outstanding KeyUpdate request
+  - `453374fa`: return an error when encryption limits are exhausted
+  - `1e894afa`: refuse further encryption after a fatal alert. trrs-net-lib
+    already poisons the send half after fatal errors.
+  - `86e06619`: account for encryption overhead in `max_fragment_size`. Only
+    matters if `max_fragment_size` is set.
+- **Candidates for a further backport round:**
+  - `3f2ef371`: reject TLS 1.3 records whose outer `opaque_type` is not
+    `application_data`
+  - `27b048a9`, `86205ca1`, `78c18be6`, `a1256b0e`: reject misplaced
+    extensions in ServerHello, EncryptedExtensions, CertificateRequest and
+    NewSessionTicket
+  - `fbdeb82e`, `1d87e381`: reject trailing data in encoded TLS 1.2 and
+    TLS 1.3 sessions
+  - `37d51997`: do not send TLS 1.3-only signature schemes when no TLS 1.3
+    suites are configured (low relevance; does not compile as-is on this base)
+- **Not relevant to how trrs-net-lib uses rustls:**
+  - ECH: `7a71ad82`, `7dcbe4c1`
+  - certificate compression: `5c9a6502`, `402b7b78`
+  - server ticketer: `2063323c`
+  - provider private key zeroizing: `8fcffe1b`
+
+### Known test gap at this base
+
+The client RPK tests in `rustls/src/client/test.rs`
+(`test_client_requiring_rpk_*`) return early: they call `x25519_provider()`,
+which finds no X25519 group in the fake `TEST_PROVIDER`. Upstream later moved
+them to the fake key exchange group. The TLS 1.3 tests added in patch 4 use
+that fake group (`KEY_EXCHANGE_GROUP`). Each new test was checked to fail with
+its fix removed, except the `Debug` test, which compares the exact output.
 
 Watch rustls security advisories
 (<https://github.com/rustls/rustls/security/advisories>) and RUSTSEC. Backport
@@ -168,4 +213,4 @@ trrs-net-lib.
 2. Run `cargo update -p rustls -p rustls-aws-lc-rs -p rustls-ring`.
 3. Release trrs-net-lib. trrs then bumps its `trrs-net-lib` tag and runs
    `cargo update -p trrs-net-lib`. Neither repository needs source changes for
-   patches that keep the rustls API unchanged, like patches 2 and 3.
+   patches that keep the rustls API unchanged, like patches 2 to 4.
