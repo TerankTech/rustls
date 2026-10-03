@@ -156,6 +156,15 @@ Reference results for this branch:
 
 Both BoGo result sets are the same as at `ff52d536`, before patches 3 and 4.
 
+CI runs most of this automatically. `.github/workflows/terank.yml` runs
+formatting, clippy, the unit and API tests, BoGo with both providers and
+cargo-deny on every pull request and on pushes to `terank/in-place-encrypter`,
+on standard x86 runners. The receive benchmark is not in CI: shared runners are
+too noisy for it, so run it by hand. The workflows inherited from upstream
+(`rustls`, `cross`, `daily-tests`, `documentation`, `CIFuzz`) are disabled in
+this repository's Actions settings. They serve upstream's needs, and most of
+them run on upstream-only arm64 runners that never start here.
+
 Then check trrs-net-lib against the new commit: point its three rustls
 dependencies at it and run
 `cargo test --release --features tls-split --lib` and
