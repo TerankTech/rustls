@@ -22,7 +22,7 @@ use crate::crypto::{
     SingleCredential, TEST_PROVIDER, tls12, tls12_only,
 };
 use crate::enums::{CertificateType, ProtocolVersion};
-use crate::error::{Error, PeerIncompatible};
+use crate::error::{Error, PeerIncompatible, PeerMisbehaved};
 use crate::msgs::{
     ClientExtensions, ClientHelloPayload, Codec, Compression, HEADER_SIZE, HandshakeMessagePayload,
     HandshakePayload, KeyShareEntry, Message, MessagePayload, Random, Reader, SessionId,
@@ -219,6 +219,37 @@ fn test_server_rejects_no_extended_master_secret_extension_when_require_ems_or_f
         Err(Error::PeerIncompatible(
             PeerIncompatible::ExtendedMasterSecretExtensionRequired
         ))
+    );
+}
+
+#[test]
+fn test_server_rejects_non_empty_renegotiation_info_in_initial_handshake() {
+    let provider = tls12_only(TEST_PROVIDER.clone());
+    let config = ServerConfig::builder(provider.into())
+        .with_no_client_auth()
+        .with_single_cert(server_identity(), server_key())
+        .unwrap();
+    let mut conn = ServerConnection::new(config.into()).unwrap();
+    let mut input = VecInput::default();
+
+    // a client behaving as if it were renegotiating an existing connection:
+    // `renegotiated_connection` carries its verify_data instead of being empty.
+    let mut ch = minimal_client_hello();
+    ch.extensions.renegotiation_info = Some(SizedPayload::from(vec![0x55; 12]));
+    let ch = Message {
+        version: ProtocolVersion::TLSv1_2,
+        payload: MessagePayload::handshake(HandshakeMessagePayload(HandshakePayload::ClientHello(
+            ch,
+        ))),
+    };
+    input
+        .read(&mut ch.into_wire_bytes().as_slice())
+        .unwrap();
+
+    assert_eq!(
+        conn.process_new_packets(&mut input)
+            .unwrap_err(),
+        Error::PeerMisbehaved(PeerMisbehaved::NonEmptyRenegotiationInfo)
     );
 }
 

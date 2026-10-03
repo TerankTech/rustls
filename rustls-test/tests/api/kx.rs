@@ -3,6 +3,7 @@
 #![allow(clippy::disallowed_types, clippy::duplicate_mod)]
 
 use std::borrow::Cow;
+use std::io;
 use std::sync::Arc;
 
 use rustls::client::Resumption;
@@ -473,7 +474,21 @@ fn hybrid_kx_component_share_offered_but_server_chooses_something_else() {
     server
         .process_new_packets(&mut server_input)
         .unwrap();
-    transfer(&mut server, &mut client_1_input);
+    let mut client_1_hello = Vec::new();
+    client_1
+        .write_tls(&mut io::Cursor::new(&mut client_1_hello))
+        .unwrap();
+    let mut server_flight = Vec::new();
+    while server.wants_write() {
+        server
+            .write_tls(&mut io::Cursor::new(&mut server_flight))
+            .unwrap();
+    }
+    // client_1 requires its own `session_id` back, not client_2's
+    encoding::echo_session_id(&client_1_hello, &mut server_flight);
+    client_1_input
+        .read(&mut io::Cursor::new(&server_flight))
+        .unwrap();
     assert_eq!(
         client_1
             .process_new_packets(&mut client_1_input)

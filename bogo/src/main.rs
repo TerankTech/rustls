@@ -2034,9 +2034,9 @@ fn handle_err(opts: &Options, err: Error) -> ! {
         Error::PeerMisbehaved(PeerMisbehaved::EarlyDataOfferedWithVariedCipherSuite) => {
             quit(":CIPHER_MISMATCH_ON_EARLY_DATA:")
         }
-        Error::PeerMisbehaved(PeerMisbehaved::ServerEchoedCompatibilitySessionId) => {
-            quit(":SERVER_ECHOED_INVALID_SESSION_ID:")
-        }
+        Error::PeerMisbehaved(
+            PeerMisbehaved::ServerEchoedCompatibilitySessionId | PeerMisbehaved::UnmatchedSessionId,
+        ) => quit(":SERVER_ECHOED_INVALID_SESSION_ID:"),
         Error::PeerMisbehaved(PeerMisbehaved::TooManyEmptyFragments) => {
             quit(":TOO_MANY_EMPTY_FRAGMENTS:")
         }
@@ -2130,6 +2130,9 @@ fn handle_err(opts: &Options, err: Error) -> ! {
         Error::PeerMisbehaved(
             PeerMisbehaved::IllegalAlertLevel(_, _) | PeerMisbehaved::IllegalWarningAlert(_),
         ) => quit(":BAD_ALERT:"),
+        Error::PeerMisbehaved(PeerMisbehaved::NonEmptyRenegotiationInfo) => {
+            quit(":RENEGOTIATION_MISMATCH:")
+        }
         Error::PeerMisbehaved(_) => panic!("!!! please add error mapping for {err:?}"),
         Error::AlertReceived(AlertDescription::UnexpectedMessage) => quit(":BAD_ALERT:"),
         Error::AlertReceived(AlertDescription::DecompressionFailure) => {

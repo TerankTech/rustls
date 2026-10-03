@@ -120,16 +120,15 @@ mod server_hello {
                 return Err(PeerMisbehaved::AttemptedDowngradeToTls12WhenTls13IsSupported.into());
             }
 
-            // If we didn't have an input session to resume, and we sent a session ID,
-            // that implies we sent a TLS 1.3 legacy_session_id for compatibility purposes.
-            // In this instance since we're now continuing a TLS 1.2 handshake the server
-            // should not have echoed it back: it's a randomly generated session ID it couldn't
-            // have known.
-            if st.input.resuming.is_none()
-                && !st.input.session_id.is_empty()
-                && st.input.session_id == server_hello.session_id
+            // RFC 5746 section 3.4: `renegotiated_connection` must be empty in an
+            // initial handshake.  A non-empty value means the server believes it is
+            // renegotiating an existing connection.
+            if server_hello
+                .renegotiation_info
+                .as_ref()
+                .is_some_and(|info| !info.is_empty())
             {
-                return Err(PeerMisbehaved::ServerEchoedCompatibilitySessionId.into());
+                return Err(PeerMisbehaved::NonEmptyRenegotiationInfo.into());
             }
 
             let ClientHelloInput {
@@ -145,6 +144,18 @@ mod server_hello {
                     ClientSessionValue::Tls12(inner) => Some(inner),
                     ClientSessionValue::Tls13(_) => None,
                 });
+
+            // If we didn't have a TLS 1.2 session to resume, and we sent a session ID,
+            // that implies we sent a TLS 1.3 legacy_session_id for compatibility purposes.
+            // In this instance since we're now continuing a TLS 1.2 handshake the server
+            // should not have echoed it back: it's a randomly generated session ID it couldn't
+            // have known.
+            if resuming_session.is_none()
+                && !st.input.session_id.is_empty()
+                && st.input.session_id == server_hello.session_id
+            {
+                return Err(PeerMisbehaved::ServerEchoedCompatibilitySessionId.into());
+            }
 
             // Doing EMS?
             let using_ems = server_hello
@@ -675,6 +686,15 @@ impl ExpectCertificateRequest {
         // We ignore certreq.certtypes as a result, since the information it contains
         // is entirely duplicated in certreq.sigschemes.
 
+        // Filter out signature schemes that don't have an associated `SignatureAlgorithm`;
+        // we use this to select only signature schemes that are allowed on 1.2.
+        let signature_schemes = certreq
+            .sigschemes
+            .iter()
+            .copied()
+            .filter(|scheme| scheme.algorithm().is_some())
+            .collect::<Vec<_>>();
+
         const NO_CONTEXT: Option<Vec<u8>> = None; // TLS 1.2 doesn't use a context.
         let no_compression = None; // or compression
         let client_auth = ClientAuthDetails::resolve(
@@ -682,7 +702,7 @@ impl ExpectCertificateRequest {
                 .unwrap_or(CertificateType::X509),
             self.hs.config.resolver().as_ref(),
             Some(&certreq.canames),
-            &certreq.sigschemes,
+            &signature_schemes,
             NO_CONTEXT,
             no_compression,
         );

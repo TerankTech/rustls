@@ -292,7 +292,8 @@ impl crypto::kx::ActiveKeyExchange for ActiveKeyExchange {
     }
 }
 
-const KEY_EXCHANGE_GROUP: &dyn SupportedKxGroup = &FakeKeyExchangeGroup(NamedGroup(0xfe00));
+pub(crate) const KEY_EXCHANGE_GROUP: &dyn SupportedKxGroup =
+    &FakeKeyExchangeGroup(NamedGroup(0xfe00));
 
 #[derive(Debug)]
 pub(crate) struct FakeKeyExchangeGroup(pub(crate) NamedGroup);
