@@ -1,8 +1,8 @@
 # TerankTech rustls fork
 
 This branch (`terank/in-place-encrypter`) carries a small patch series on top
-of a snapshot of upstream rustls `main`. It exists for
-[trrs-net-lib](https://github.com/TerankTech/trrs-net-lib), which pins one
+of a snapshot of upstream rustls `main`. It exists for trrs-net-lib (the
+private `TerankTech/trrs-net-lib` repository), which pins one
 commit of this branch by `rev` for `rustls`, `rustls-aws-lc-rs` and
 `rustls-ring`. All three crates must come from the same commit. trrs uses the
 fork only through trrs-net-lib.
