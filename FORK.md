@@ -205,6 +205,37 @@ Watch rustls security advisories
 fixes onto this branch, record them under "Carried patches", and bump the pin in
 trrs-net-lib.
 
+## Branches and tags
+
+`terank/in-place-encrypter` is the default branch and the only long-lived one.
+Work happens on short-lived branches merged into it through pull requests.
+Delete those branches after merging.
+
+trrs-net-lib and trrs releases lock exact fork commits. Cargo fetches a locked
+commit directly, even if the branch named in an old `Cargo.toml` no longer
+exists. A release therefore stays buildable as long as its commit is reachable
+from some branch or tag. Before deleting a branch, or force-pushing over
+commits, check whether any release locks one of its commits. If one does, tag
+the branch head as `archive/<branch>` first.
+
+Tags that keep released or referenced commits reachable:
+
+| tag | commit | needed by |
+|---|---|---|
+| `archive/set-plaintext-buffer-limit` | `4504657a` | trrs-net-lib v0.1.x–v0.2.2rc2, locked at `f4635ae8`, `51d0b61f` and `4504657a`; trrs history |
+| `archive/increase-buffer-limits-ac50752d` | `ac50752d` | trrs-net-lib v0.2.2rc3–v0.5.7; trrs history |
+| `v0.24.0-terank.1` | `ea88e9b6` | trrs-net-lib v0.6.0; trrs history |
+| `archive/state-api-fix` | `0d158b20` | trrs-net-lib v0.7.0–v0.8.2; trrs history |
+| `archive/perf-rx-app-data-fast-path` | `919a9c75` | trrs-net-lib branch `feature/tx-send-latency` |
+| `archive/feat-tls-large-burst-buffer` | `9fee78a9` | unpinned experiment, kept for reference |
+| `archive/teranktech-jbp-new-api` | `8169be04` | unpinned split/state API experiment, superseded by upstream split mode |
+
+On 2026-10-03 the branches these tags replace were deleted, and so were
+`increase-buffer-limits` (its head is `v0.24.0-terank.1`) and the stale `main`
+(an untouched upstream snapshot from 2025-01-22). Fetching trrs-net-lib v0.1.0,
+v0.5.7 and v0.8.2 with an empty cargo git cache still resolves their locked
+rustls commits.
+
 ## Updating the pin in trrs-net-lib
 
 1. Change the three `rev = "…"` entries in trrs-net-lib's `Cargo.toml` to the
