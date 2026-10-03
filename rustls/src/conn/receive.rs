@@ -362,6 +362,11 @@ impl ReceivePath {
     ///
     /// Otherwise the caller must present the returned `Input` to the state machine to
     /// progress the connection.
+    ///
+    /// Application data received in a post-handshake traffic state does not reach
+    /// this function: `process_new_packets()` delivers it on a fast path (see
+    /// `StateMachine::on_app_data_fast()`). A check added here that must also apply
+    /// to such records has to be added to that fast path too.
     pub(crate) fn receive_message<'a>(
         &mut self,
         msg: EncodedMessage<&'a [u8]>,

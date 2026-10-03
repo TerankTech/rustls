@@ -72,13 +72,14 @@ impl Tls13State {
         }
     }
 
-    /// See [`crate::conn::StateMachine::on_app_data_fast`]: mirrors the
+    /// See [`crate::conn::StateMachine::on_app_data_fast`]: runs the same
+    /// `ExpectTraffic::received_app_data()` bookkeeping as the
     /// `MessagePayload::ApplicationData` arm of `ExpectTraffic::handle`.
     /// Early-data states keep the generic path.
     pub(crate) fn on_app_data_fast(&mut self) -> bool {
         match self {
             Self::Traffic(e) => {
-                e.counters.received_app_data();
+                e.received_app_data();
                 true
             }
             _ => false,
@@ -1549,6 +1550,16 @@ impl ExpectTraffic {
 }
 
 impl ExpectTraffic {
+    /// Per-record bookkeeping for received application data.
+    ///
+    /// Shared by the `ApplicationData` arm of `handle()` and the receive fast
+    /// path (`Tls13State::on_app_data_fast()`), which skips `handle()` for
+    /// application data. Anything that must happen for every application data
+    /// record in this state belongs here so both paths stay in step.
+    fn received_app_data(&mut self) {
+        self.counters.received_app_data();
+    }
+
     fn handle<'m>(
         mut self: Box<Self>,
         input: Input<'m>,
@@ -1556,7 +1567,7 @@ impl ExpectTraffic {
     ) -> Result<ServerState, Error> {
         match input.message.payload {
             MessagePayload::ApplicationData(payload) => {
-                self.counters.received_app_data();
+                self.received_app_data();
                 output.received_plaintext(payload);
             }
             MessagePayload::Handshake {
