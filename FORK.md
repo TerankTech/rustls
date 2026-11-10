@@ -9,8 +9,10 @@ fork only through trrs-net-lib.
 
 The fork is the vehicle for latency work on the TLS hot path. Upstream `main`
 has since reworked the connection API for 0.24. Moving trrs-net-lib onto it
-would need a port of its TLS layer and measured slightly slower receive. That
-was decided against on 2026-10-03.
+would need a port of its TLS layer, and upstream measures slower on both
+receive and send (see "Compared with upstream `main`"). That was decided
+against on 2026-10-03 and again on 2026-11-10. No upstream release has split
+mode yet: the latest stable release is 0.23.46, and 0.24.0 is not out.
 
 ## Base
 
@@ -57,6 +59,17 @@ In branch order:
    These add `PeerMisbehaved::UnmatchedSessionId` and
    `PeerMisbehaved::NonEmptyRenegotiationInfo`. `PeerMisbehaved` is
    `#[non_exhaustive]`, so this is not an API break.
+5. **rustls-webpki 0.104.0-alpha.8** (RUSTSEC-2026-0382): cherry-picks of
+   upstream `35a8f439` and `927e1617`. That rustls-webpki version rejects
+   certificate paths that contain the distrusted emSign intermediate keys;
+   the second commit maps its new errors. The workspace pins rustls-webpki
+   exactly, so a consumer only gets a new version through this fork.
+6. **RUSTSEC-2026-0349 / GHSA-w44r-93j7-qv28 fix**: cherry-pick of upstream
+   `8fa0dc5d`. The client remembers the server's key exchange group for its
+   next ClientHello only once the server is authenticated.
+
+The trust store is not part of this fork. A consumer that uses `webpki-roots`
+resolves it itself and needs 1.0.10 or later for RUSTSEC-2026-0381.
 
 ## Application data fast path
 
@@ -134,6 +147,30 @@ callgrind counts about 12% fewer instructions per 64 B record. After the fast
 path, about 70% of the remaining per-record instructions are AES-GCM in aws-lc,
 mostly fixed per-record setup rather than data.
 
+### Compared with upstream `main`
+
+Measured on 2026-11-10 against upstream `main` at `0312b11d`, with the same
+machine and settings as above. Four alternating runs per side, ns per record:
+
+| | this branch | upstream `main` |
+|---|---|---|
+| receive, 64 B | 203–205 | 242–247 |
+| receive, 220 B | 210–213 | 246–252 |
+| receive, 1400 B | 312–317 | 350–361 |
+| send, 64 B | 115–116 | 134–136 |
+| send, 220 B | 122–126 | 146–148 |
+| send, 1400 B | 236–243 | 263–269 |
+
+Receive is `split_receive_bench`. Send is `split_send_bench`, which encrypts
+with `SendTraffic::write_into()` straight into a destination buffer. Upstream
+has no call that takes the destination: there the benchmark used
+`SendTraffic::write()` into a reused `Vec` and copied the result into the
+destination, which is what trrs-net-lib would have to do. Both benchmarks
+were ported to upstream's API for the comparison; the ports are not in this
+repository. They differ in the handshake helper (`make_pair()` returns the
+buffers, `buffers.handshake()`), in `write()` taking the output `Vec`, and in
+`read()` returning a plain `Error`.
+
 ## Validation
 
 Run all of these on every change to this branch:
@@ -147,10 +184,11 @@ cargo fmt --all -- --check
 (cd bogo && ./runme)                          # aws-lc-rs
 (cd bogo && BOGO_SHIM_PROVIDER=ring ./runme)  # ring
 cargo test --release -p rustls-test --test split_receive_bench -- --ignored --nocapture
+cargo test --release -p rustls-test --test split_send_bench -- --ignored --nocapture
 ```
 
 Reference results for this branch:
-- 226 rustls unit tests and 516 API tests pass.
+- 227 rustls unit tests and 516 API tests pass.
 - BoGo with aws-lc-rs: 1385 passed, 0 failed, 723 unimplemented.
 - BoGo with ring: 1301 passed, 0 failed, 703 unimplemented.
 
@@ -159,8 +197,8 @@ Both BoGo result sets are the same as at `ff52d536`, before patches 3 and 4.
 CI runs most of this automatically. `.github/workflows/terank.yml` runs
 formatting, clippy, the unit and API tests, BoGo with both providers and
 cargo-deny on every pull request and on pushes to `terank/in-place-encrypter`,
-on standard x86 runners. The receive benchmark is not in CI: shared runners are
-too noisy for it, so run it by hand. The workflows inherited from upstream
+on standard x86 runners. The benchmarks are not in CI: shared runners are too
+noisy for them, so run them by hand. The workflows inherited from upstream
 (`rustls`, `cross`, `daily-tests`, `documentation`, `CIFuzz`) are disabled in
 this repository's Actions settings. They serve upstream's needs, and most of
 them run on upstream-only arm64 runners that never start here.
@@ -173,8 +211,11 @@ dependencies at it and run
 ## Upstream hardening not in this fork
 
 Upstream `main` has landed hardening since the base that this fork does not
-carry. Only patch 2 had an advisory. Patch 4 backported the client-relevant
-fixes that apply with small adaptations. Still missing:
+carry. Patches 2, 5 and 6 fix advisories; one commit of patch 4 (`f5f7bf50`)
+turned out to be the fix for RUSTSEC-2026-0346. Patch 4 backported the
+client-relevant fixes that apply with small adaptations. The other advisories
+of October 2026 do not apply: RUSTSEC-2026-0347 needs ECH and
+RUSTSEC-2026-0348 the `brotli` feature. Still missing:
 
 - **Upstream rewrote the send path, so these need reimplementing rather than
   cherry-picking:**
@@ -194,6 +235,29 @@ fixes that apply with small adaptations. Still missing:
     TLS 1.3 sessions
   - `37d51997`: do not send TLS 1.3-only signature schemes when no TLS 1.3
     suites are configured (low relevance; does not compile as-is on this base)
+- **Landed upstream after the backport round of 2026-10-03, client side, not
+  reviewed in detail:**
+  - `19b03667`: reject protocol version changes after HelloRetryRequest
+  - `013beb9d`, `0d7f9b32`: reject a HelloRetryRequest that selects a
+    non-TLS 1.3 cipher suite, or names a group already offered
+  - `1783110b`: reject a ServerHello key share for a group the client did not
+    offer
+  - `6148ff16`: reject TLS 1.3 negotiated via `legacy_version`
+  - `e7506724`: reject TLS 1.3-only extensions in a TLS 1.2 ServerHello
+  - `5a2bedcd`: reject an unsolicited `status_request` in a TLS 1.3
+    Certificate
+  - `c30f81ab`: discard TLS 1.3 tickets with a zero `ticket_lifetime`
+  - `0e73e14c`: skip the TLS 1.2 session lookup when TLS 1.2 resumption is
+    disabled
+  - `8f54626e`: expand exactly `key_len` bytes for TLS 1.3 AEAD keys
+  - `94865a71`: `LimitedCache` retains up to the requested capacity
+  - the send path was rewritten again (upstream PRs #3332 and #3342): record
+    limits are checked for all fragments before any is encrypted, and TLS 1.3
+    key updates are sent in time
+
+  A trial on 2026-11-10 found that `78c18be6`, `a1256b0e`, `fbdeb82e`,
+  `1d87e381`, `94865a71`, `013beb9d`, `1783110b` and `0d7f9b32` cherry-pick
+  cleanly, but the unit tests they bring do not compile on this base.
 - **Not relevant to how trrs-net-lib uses rustls:**
   - ECH: `7a71ad82`, `7dcbe4c1`
   - certificate compression: `5c9a6502`, `402b7b78`
